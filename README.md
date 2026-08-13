@@ -43,6 +43,22 @@ asyncio.run(main())
 `SunwayInverter` takes a `ModbusUnit`, never a connection or a host — the caller
 opens, owns and closes the link with whichever backend it prefers.
 
+A poll reads each sub-system independently, the way the source integration reads
+its blocks: one slow or refused block does not take the rest of the poll with it.
+`async_update()` returns an `UpdateReport` — a failed component keeps its
+previous values, does not notify its listeners, and is listed by attribute name
+with its error, while every other component refreshes and notifies once the
+whole poll is done. Only a dead link (`ModbusConnectionError`) raises:
+
+```python
+report = await inverter.async_update()
+for name, error in report.failed.items():
+    print(f"{name} kept its previous values: {error}")
+```
+
+An inverter that has gone to sleep answers nothing, so `report.updated` is empty
+and every polled sub-system is in `report.failed`.
+
 ## Supported devices
 
 The register map covers the SunWay STT-10KTL hybrid inverter family. Register
@@ -57,10 +73,12 @@ single-phase unit the phase B/C registers exist but read as zero, exactly as the
 do in the source integration.
 
 Which register blocks are actually polled is settled on the first
-`async_update()`: each sub-system is read once, and one the inverter refuses with
-an *illegal data address* is dropped from the poll. Its fields keep reading
-`None` rather than failing the whole update — the behaviour the source
-integration gets from its per-block `ignore_readerror`.
+`async_update()`: each sub-system is read once, and one the inverter refuses
+outright — *illegal data address* or *illegal function* — is dropped from the
+poll, its fields left reading `None`. A probe that fails any other way (a
+timeout, a busy device) says nothing about the register map, so that sub-system
+stays polled and simply shows up in the report as failed. Call `async_setup()`
+again to re-probe a device that has since gained a sub-system.
 
 ## Sub-systems
 
