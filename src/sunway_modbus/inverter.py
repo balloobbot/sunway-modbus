@@ -111,6 +111,25 @@ class SunwayInverter:
         updated, failed = await self._async_read(self._polled)
         return UpdateReport(updated, failed)
 
+    async def async_read_raw(self) -> dict[str, dict[int, int | bool]]:
+        """Every register this inverter reads, undecoded — for diagnostics.
+
+        The identity block comes along: a poll never reads it again, and it is
+        the first thing an issue report is read for. Left out are the
+        sub-systems setup found this inverter does not serve, so a dump is not
+        half refusals; one that refuses anyway raises, since there the error is
+        the point. The first call sets the inverter up.
+        """
+        if self._polled is None:
+            await self.async_setup()
+        assert self._polled is not None  # async_setup() builds it
+        raw: dict[str, dict[int, int | bool]] = {}
+        for name in ("info", *self._polled):
+            component: SunwayComponent = getattr(self, name)
+            for space, values in (await component.async_read_raw()).items():
+                raw.setdefault(space, {}).update(values)
+        return {space: dict(sorted(values.items())) for space, values in raw.items()}
+
     async def _async_read(
         self, names: Sequence[str]
     ) -> tuple[set[str], dict[str, ModbusError]]:

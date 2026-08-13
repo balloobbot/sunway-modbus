@@ -117,3 +117,26 @@ async def test_a_refused_block_drops_only_its_component(
     mock_modbus_unit.read_events.clear()
     await inverter.async_update()  # the dropped block is never read again
     assert 43000 not in [e.address for e in mock_modbus_unit.read_events]
+
+
+async def test_raw_dump_covers_the_identity_block_and_every_polled_block(
+    inverter: SunwayInverter,
+) -> None:
+    """A dump carries the setup-only identity block, which a poll never reads."""
+    holding = (await inverter.async_read_raw())["holding"]
+
+    assert holding[10008] == 0x3004  # equipment info, read at setup only
+    assert {address for address, _ in POLL_BLOCKS} <= set(holding)
+
+
+async def test_raw_dump_skips_a_sub_system_the_inverter_does_not_serve(
+    inverter: SunwayInverter, mock_modbus_unit: MockModbusUnit
+) -> None:
+    """A dump of an inverter without a BMS is not padded out with refusals."""
+    mock_modbus_unit.fail_read(43000, IllegalDataAddressError())
+
+    holding = (await inverter.async_read_raw())["holding"]
+
+    assert 43000 not in holding
+    assert 10008 in holding  # identity is still in there
+    assert 11009 in holding

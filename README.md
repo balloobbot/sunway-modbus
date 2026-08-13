@@ -59,6 +59,19 @@ for name, error in report.failed.items():
 An inverter that has gone to sleep answers nothing, so `report.updated` is empty
 and every polled sub-system is in `report.failed`.
 
+### Diagnostics
+
+`async_read_raw()` reads the inverter fresh and returns every register undecoded,
+`{space: {address: value}}`, for an issue report. It covers the identity block as
+well as the polled sub-systems — a poll never reads the identity again after
+setup — and leaves out the sub-systems setup found this inverter does not serve,
+so a dump is not half refusals:
+
+```python
+raw = await inverter.async_read_raw()
+print(raw["holding"][10008])  # the equipment-info word it identified itself with
+```
+
 ## Supported devices
 
 The register map covers the SunWay STT-10KTL hybrid inverter family. Register
