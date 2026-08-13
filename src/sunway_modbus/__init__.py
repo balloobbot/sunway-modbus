@@ -33,6 +33,7 @@ from .enums import (
 from .grid import Grid
 from .inverter import SunwayInverter
 from .meter import Meter
+from .model import UpdateReport
 from .settings import BatteryProtection, GridInjectionLimit, InverterSettings
 from .solar import Solar
 from .status import ArmStatus, Status
@@ -58,5 +59,6 @@ __all__ = [
     "Solar",
     "Status",
     "SunwayInverter",
+    "UpdateReport",
     "WorkingMode",
 ]

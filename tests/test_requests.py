@@ -18,7 +18,10 @@ from sunway_modbus.model import MAX_READ_SPAN
 POLL_BLOCKS = [
     (10100, 14),  # status: clock 10100-10102, running status 10105, fault 10112-10113
     (10994, 12),  # meter: four int32 powers + two uint32 energies
-    (11009, 33),  # grid 11009-11017 meets solar 11018-11041, so they share a read
+    # Grid and solar are adjacent (11017 meets 11018) but are read apart: each
+    # component is polled on its own so a failure cannot take the other with it.
+    (11009, 9),  # grid: three phase voltage/current pairs, frequency, int32 power
+    (11018, 24),  # solar: energy counters, PV total power, the two string pairs
     (11062, 4),  # solar per-string power sits 21 registers above the pair block
     (18000, 2),  # ARM fault flag, alone in its own address region
     (25100, 4),  # grid injection limit: enable flag + limit setting
@@ -49,13 +52,14 @@ async def test_poll_blocks(
 
 async def test_every_field_is_covered_by_a_block(inverter: SunwayInverter) -> None:
     """Every polled field's registers fall inside a block the poll reads."""
-    await inverter.async_update()
+    report = await inverter.async_update()
     covered = {
         address
         for start, count in POLL_BLOCKS
         for address in range(start, start + count)
     }
-    for component in inverter.polled_components:
+    for polled in report.updated:
+        component = getattr(inverter, polled)
         for name, field in component.declared_fields.items():
             span = range(field.address, field.address + field.count)
             missing = [address for address in span if address not in covered]
@@ -102,10 +106,11 @@ async def test_a_refused_block_drops_only_its_component(
     """An inverter without a battery refuses that block; the rest still polls."""
     mock_modbus_unit.fail_read(43000, IllegalDataAddressError())
 
-    await inverter.async_update()
+    report = await inverter.async_update()
 
-    assert inverter.bms not in inverter.polled_components
-    assert inverter.grid in inverter.polled_components
+    assert "bms" not in report.updated
+    assert "bms" not in report.failed  # dropped, not failing: it is simply absent
+    assert "grid" in report.updated
     assert inverter.bms.state_of_charge is None
     assert inverter.grid.ac_power == 4200
 
