@@ -77,22 +77,23 @@ async def test_every_component_refreshes_on_a_healthy_device(
     assert "info" not in report.updated  # identity is read at setup, not polled
 
 
-async def test_a_sleeping_device_reports_every_component_failed(
+async def test_a_sleeping_device_raises_on_the_first_timeout(
     inverter: SunwayInverter, mock_modbus_unit: MockModbusUnit
 ) -> None:
-    """A device that answers nothing is distinguishable from one that answers.
+    """A device that answers nothing is not walked sub-system by sub-system.
 
-    Every component times out, so nothing refreshed and everything is named as
-    failed — a consumer can read that as "asleep" rather than as a healthy poll.
+    Nothing refreshed and nothing refused either, so the first timeout ends the
+    poll instead of paying one timeout per block on an inverter that is asleep.
     """
-    served = (await inverter.async_update()).updated
+    await inverter.async_update()
 
     mock_modbus_unit.fail_requests(ModbusTimeoutError("no answer"))
-    report = await inverter.async_update()
+    mock_modbus_unit.read_events.clear()
 
-    assert report.updated == set()
-    assert set(report.failed) == served
-    assert not report.complete
+    with pytest.raises(ModbusTimeoutError):
+        await inverter.async_update()
+
+    assert len(mock_modbus_unit.read_events) == 1
 
 
 async def test_a_slow_block_during_setup_keeps_its_component_polled(
@@ -111,6 +112,24 @@ async def test_a_slow_block_during_setup_keeps_its_component_polled(
     assert report.complete
     assert "bms" in report.updated
     assert inverter.bms.state_of_charge == 87.5
+
+
+async def test_the_first_block_timing_out_during_setup_is_not_fatal(
+    inverter: SunwayInverter, mock_modbus_unit: MockModbusUnit
+) -> None:
+    """The probe must still try every sub-system, even if the first is silent.
+
+    The poll stops on a timeout nothing answered before; setup may not, or a
+    slow first block would leave the inverter unset up.
+    """
+    mock_modbus_unit.fail_read(10100, ModbusTimeoutError("slow status block"))
+    setup = await inverter.async_update()
+
+    assert set(setup.failed) == {"status"}
+    assert "grid" in setup.updated  # the probe carried on past the silent block
+
+    mock_modbus_unit.fail_read(10100, None)
+    assert (await inverter.async_update()).complete
 
 
 async def test_a_refused_function_during_setup_drops_only_its_component(

@@ -9,6 +9,7 @@ from modbus_connection import (
     IllegalFunctionError,
     ModbusConnectionError,
     ModbusError,
+    ModbusTimeoutError,
 )
 
 from .backup import Backup
@@ -105,10 +106,14 @@ class SunwayInverter:
         )
 
     async def async_update(self) -> UpdateReport:
-        """Refresh every served sub-system; the first call sets the inverter up."""
+        """Refresh every served sub-system; the first call sets the inverter up.
+
+        A timeout with nothing read yet raises: the inverter is not answering,
+        and the rest would only wait for their own timeouts.
+        """
         if self._polled is None:
             return await self.async_setup()
-        updated, failed = await self._async_read(self._polled)
+        updated, failed = await self._async_read(self._polled, fatal_timeout=True)
         return UpdateReport(updated, failed)
 
     async def async_read_raw(self) -> dict[str, dict[int, int | bool]]:
@@ -132,13 +137,16 @@ class SunwayInverter:
         return {space: dict(sorted(values.items())) for space, values in raw.items()}
 
     async def _async_read(
-        self, names: Sequence[str]
+        self, names: Sequence[str], *, fatal_timeout: bool = False
     ) -> tuple[set[str], dict[str, ModbusError]]:
         """Read the named sub-systems one at a time, containing failures.
 
         Listeners fire only once every sub-system has been tried, and only for
         the ones that refreshed — a failed component's store is untouched, so
         its fields keep their previous values.
+
+        ``fatal_timeout`` raises a timeout that nothing has answered before.
+        The setup probe leaves it off: there a timeout must keep its sub-system.
         """
         updated: set[str] = set()
         failed: dict[str, ModbusError] = {}
@@ -148,6 +156,10 @@ class SunwayInverter:
                 await component.async_update(notify=False)
             except ModbusConnectionError:
                 raise
+            except ModbusTimeoutError as err:
+                if fatal_timeout and not updated and not failed:
+                    raise  # nothing answered at all; assume the rest time out too
+                failed[name] = err
             except ModbusError as err:
                 failed[name] = err
             else:
