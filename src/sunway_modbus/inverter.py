@@ -118,7 +118,8 @@ class SunwayInverter:
         the first thing an issue report is read for. Left out are the
         sub-systems setup found this inverter does not serve, so a dump is not
         half refusals; one that refuses anyway raises, since there the error is
-        the point. The first call sets the inverter up.
+        the point. The first call sets the inverter up. Nothing notifies: a
+        download is not a poll.
         """
         if self._polled is None:
             await self.async_setup()
@@ -126,7 +127,7 @@ class SunwayInverter:
         raw: dict[str, dict[int, int | bool]] = {}
         for name in ("info", *self._polled):
             component: SunwayComponent = getattr(self, name)
-            for space, values in (await component.async_read_raw()).items():
+            for space, values in (await component.async_read_raw(notify=False)).items():
                 raw.setdefault(space, {}).update(values)
         return {space: dict(sorted(values.items())) for space, values in raw.items()}
 

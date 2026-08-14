@@ -129,6 +129,19 @@ async def test_raw_dump_covers_the_identity_block_and_every_polled_block(
     assert {address for address, _ in POLL_BLOCKS} <= set(holding)
 
 
+async def test_raw_dump_does_not_notify(inverter: SunwayInverter) -> None:
+    """A download is not a poll: no listener hears it, but the fields refresh."""
+    await inverter.async_update()
+    seen: list[str] = []
+    for name in ("info", "grid", "solar"):
+        getattr(inverter, name).add_update_listener(lambda n=name: seen.append(n))
+
+    await inverter.async_read_raw()
+
+    assert seen == []
+    assert inverter.grid.ac_power == 4200
+
+
 async def test_raw_dump_skips_a_sub_system_the_inverter_does_not_serve(
     inverter: SunwayInverter, mock_modbus_unit: MockModbusUnit
 ) -> None:
