@@ -123,6 +123,29 @@ await inverter.grid_injection_limit.write("enabled", True)
 await inverter.status.async_sync_time()  # set the inverter's real-time clock
 ```
 
+### Splitting the poll
+
+A full poll is 16 requests. Everything that only changes when something writes
+it already sits in a component of its own, so a consumer can give those their
+own, slower schedule and leave the rest where it is — five of the sixteen:
+
+| Component | Requests | Blocks |
+| --- | --- | --- |
+| `grid_injection_limit` | 1 | 25100+4 |
+| `bms_info` | 1 | 42000+7 |
+| `settings` | 2 | 50000+10, 50202+10 |
+| `battery_protection` | 1 | 52502+4 |
+
+`bms_info` is the one judgement call: its identity registers are fixed once the
+battery is paired, but 42005-42006 are the BMS's own current limits, which a
+consumer wanting them live should keep on the fast schedule.
+
+Nothing else is worth moving, because no live block on this inverter holds a
+configuration register — every writable one is in the four components above.
+Carving the clock out of `status` (10100-10102, inside the 10100+14 block that
+running status and the fault flags are read in anyway) would add a request
+rather than save one.
+
 ## ASCII framing is not supported
 
 This library speaks binary Modbus only — RTU or TCP framing. **ASCII over TCP is
