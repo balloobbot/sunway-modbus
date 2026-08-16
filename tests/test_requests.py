@@ -14,8 +14,8 @@ from modbus_connection.mock import MockModbusUnit
 from sunway_modbus import Solar, Status, SunwayInverter
 from sunway_modbus.model import MAX_READ_SPAN
 
-# (address, count) of every block a full poll issues, in order.
-POLL_BLOCKS = [
+# (address, count) of every block a poll issues, in order, per update method.
+MEASUREMENT_BLOCKS = [
     (10100, 14),  # status: clock 10100-10102, running status 10105, fault 10112-10113
     (10994, 12),  # meter: four int32 powers + two uint32 energies
     # Grid and solar are adjacent (11017 meets 11018) but are read apart: each
@@ -24,17 +24,20 @@ POLL_BLOCKS = [
     (11018, 24),  # solar: energy counters, PV total power, the two string pairs
     (11062, 4),  # solar per-string power sits 21 registers above the pair block
     (18000, 2),  # ARM fault flag, alone in its own address region
-    (25100, 4),  # grid injection limit: enable flag + limit setting
     (40200, 6),  # backup voltage/current + int32 power
     (40230, 2),  # total backup power, 25 registers above the block before it
     (40254, 6),  # battery voltage/current/mode + int32 power
     (41108, 4),  # battery lifetime energy counters
     (42000, 7),  # BMS identity block, fully contiguous
     (43000, 20),  # BMS live block; 43004-43008 are unclaimed but inside the block
+]
+SETTING_BLOCKS = [
+    (25100, 4),  # grid injection limit: enable flag + limit setting
     (50000, 10),  # inverter settings, first block
     (50202, 10),  # AC/PV power settings, 193 registers above the first block
     (52502, 4),  # battery DOD protection
 ]
+POLL_BLOCKS = MEASUREMENT_BLOCKS + SETTING_BLOCKS
 
 
 async def test_poll_blocks(
@@ -48,6 +51,30 @@ async def test_poll_blocks(
     blocks = [(event.address, event.count) for event in mock_modbus_unit.read_events]
     assert blocks == POLL_BLOCKS
     assert all(e.register_type == "holding" for e in mock_modbus_unit.read_events)
+
+
+async def test_measurements_and_settings_poll_their_own_blocks(
+    inverter: SunwayInverter, mock_modbus_unit: MockModbusUnit
+) -> None:
+    """Neither method reads a register the other one owns."""
+    await inverter.async_update()
+
+    mock_modbus_unit.read_events.clear()
+    measurements = await inverter.async_update_measurements()
+    blocks = [(event.address, event.count) for event in mock_modbus_unit.read_events]
+    assert blocks == MEASUREMENT_BLOCKS
+
+    mock_modbus_unit.read_events.clear()
+    settings = await inverter.async_update_settings()
+    blocks = [(event.address, event.count) for event in mock_modbus_unit.read_events]
+    assert blocks == SETTING_BLOCKS
+
+    assert "bms_info" in measurements.updated  # the BMS reports its own limits
+    assert settings.updated == {
+        "grid_injection_limit",
+        "settings",
+        "battery_protection",
+    }
 
 
 async def test_every_field_is_covered_by_a_block(inverter: SunwayInverter) -> None:

@@ -45,7 +45,7 @@ opens, owns and closes the link with whichever backend it prefers.
 
 A poll reads each sub-system independently, the way the source integration reads
 its blocks: one slow or refused block does not take the rest of the poll with it.
-`async_update()` returns an `UpdateReport` — a failed component keeps its
+Every update method returns an `UpdateReport` — a failed component keeps its
 previous values, does not notify its listeners, and is listed by attribute name
 with its error, while every other component refreshes and notifies once the
 whole poll is done. A dead link (`ModbusConnectionError`) raises, and so does a
@@ -137,28 +137,44 @@ await inverter.grid_injection_limit.write("enabled", True)
 await inverter.status.async_sync_time()  # set the inverter's real-time clock
 ```
 
-### Splitting the poll
+### Measurements and settings refresh separately
 
-A full poll is 16 requests. Everything that only changes when something writes
-it already sits in a component of its own, so a consumer can give those their
-own, slower schedule and leave the rest where it is — five of the sixteen:
+What the inverter measures and what it has been configured to do are polled by
+their own methods, so a consumer can give the settings a slower schedule and
+read them back on demand after a write:
+
+```python
+await inverter.async_update_measurements()  # every cycle
+await inverter.async_update_settings()  # rarely, and after a write
+
+await inverter.settings.write("working_mode", WorkingMode.ECONOMIC)
+await inverter.async_update_settings()  # read back what took effect
+```
+
+`async_update()` does both, in one report, for a consumer that does not care
+about the split.
+
+A full poll is 16 requests; `grid_injection_limit`, `settings` and
+`battery_protection` are four of them — 28 registers of the 138 a full poll
+reads:
 
 | Component | Requests | Blocks |
 | --- | --- | --- |
 | `grid_injection_limit` | 1 | 25100+4 |
-| `bms_info` | 1 | 42000+7 |
 | `settings` | 2 | 50000+10, 50202+10 |
 | `battery_protection` | 1 | 52502+4 |
 
-`bms_info` is the one judgement call: its identity registers are fixed once the
-battery is paired, but 42005-42006 are the BMS's own current limits, which a
-consumer wanting them live should keep on the fast schedule.
+Nothing else moves, because no measured block on this inverter holds a
+configuration register — every writable one is in the three components above.
+`bms_info` is the judgement call that stays: its identity registers are fixed
+once the battery is paired, but 42005-42006 are the BMS's own current limits,
+which the BMS reports rather than anything setting. Carving the clock out of
+`status` (10100-10102, inside the 10100+14 block that running status and the
+fault flags are read in anyway) would add a request rather than save one.
 
-Nothing else is worth moving, because no live block on this inverter holds a
-configuration register — every writable one is in the four components above.
-Carving the clock out of `status` (10100-10102, inside the 10100+14 block that
-running status and the fault flags are read in anyway) would add a request
-rather than save one.
+A report names only what the method it came from polled, and listeners fire at
+the end of the poll that read their component, so a settings poll does not hold
+up the measurements.
 
 ## ASCII framing is not supported
 

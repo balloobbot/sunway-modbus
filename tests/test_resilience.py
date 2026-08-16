@@ -53,8 +53,14 @@ async def test_listeners_fire_at_the_end_and_only_for_fresh_components(
     mock_modbus_unit.read_events.clear()
     await inverter.async_update()
 
-    # One notification, after every component was tried; none for the failure.
-    assert seen == [len(mock_modbus_unit.read_events)]
+    # One notification, after every measurement was tried; none for the failure.
+    # The settings poll that follows is its own, and does not hold it up.
+    settings_start = next(
+        i
+        for i, event in enumerate(mock_modbus_unit.read_events)
+        if event.address == 25100
+    )
+    assert seen == [settings_start]
 
 
 async def test_a_dead_link_raises_instead_of_reporting(
@@ -92,6 +98,21 @@ async def test_a_sleeping_device_raises_on_the_first_timeout(
 
     with pytest.raises(ModbusTimeoutError):
         await inverter.async_update()
+
+    assert len(mock_modbus_unit.read_events) == 1
+
+
+async def test_a_settings_poll_of_a_sleeping_device_raises_at_once(
+    inverter: SunwayInverter, mock_modbus_unit: MockModbusUnit
+) -> None:
+    """A standalone settings poll is its own "nothing answered" run."""
+    await inverter.async_update()
+
+    mock_modbus_unit.fail_requests(ModbusTimeoutError("no answer"))
+    mock_modbus_unit.read_events.clear()
+
+    with pytest.raises(ModbusTimeoutError):
+        await inverter.async_update_settings()
 
     assert len(mock_modbus_unit.read_events) == 1
 

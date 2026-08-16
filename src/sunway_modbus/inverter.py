@@ -28,23 +28,32 @@ if TYPE_CHECKING:
 
     from modbus_connection import ModbusUnit
 
-# Every component attribute a poll may refresh, in read order. info is absent:
-# the identity registers are read once, at setup.
-_POLLED = (
+# What the inverter measures, in read order. info is absent: the identity
+# registers are read once, at setup.
+_MEASURED = (
     "status",
     "meter",
     "grid",
     "solar",
     "arm_status",
-    "grid_injection_limit",
     "backup",
     "battery",
     "battery_energy",
     "bms_info",
     "bms",
+)
+
+# What the inverter has been configured to do: every writable block, none of
+# which changes unless something writes it. bms_info stays measured — the BMS
+# reports its own current limits there, they are not set from outside.
+_CONFIGURED = (
+    "grid_injection_limit",
     "settings",
     "battery_protection",
 )
+
+# Every component attribute a poll may refresh, in read order.
+_POLLED = (*_MEASURED, *_CONFIGURED)
 
 # The refusals that mean "this inverter does not serve those registers". Any
 # other failure says nothing about the register map.
@@ -59,8 +68,13 @@ class SunwayInverter:
     reads the identity registers and probes which blocks this inverter serves.
 
     Each sub-system is read on its own, so one slow or refused block cannot
-    blank the rest: :meth:`async_update` returns an :class:`UpdateReport` naming
+    blank the rest: every update method returns an :class:`UpdateReport` naming
     what refreshed and what failed with which error.
+
+    What the inverter measures and what it has been configured to do refresh
+    separately — :meth:`async_update_measurements` and
+    :meth:`async_update_settings` — so a caller can poll the settings rarely, or
+    on demand after writing one. :meth:`async_update` does both.
     """
 
     def __init__(self, unit: ModbusUnit) -> None:
@@ -98,23 +112,56 @@ class SunwayInverter:
         Call it again to re-probe a device that has since gained a sub-system.
         """
         await self.info.async_update()
-        updated, failed = await self._async_read(_POLLED)
-        absent = {name for name, err in failed.items() if isinstance(err, _ABSENT)}
+        report = await self._async_read(_POLLED, UpdateReport(set(), {}))
+        absent = {
+            name for name, err in report.failed.items() if isinstance(err, _ABSENT)
+        }
         self._polled = [name for name in _POLLED if name not in absent]
         return UpdateReport(
-            updated, {name: err for name, err in failed.items() if name not in absent}
+            report.updated,
+            {name: err for name, err in report.failed.items() if name not in absent},
         )
 
-    async def async_update(self) -> UpdateReport:
-        """Refresh every served sub-system; the first call sets the inverter up.
+    async def async_update_measurements(self) -> UpdateReport:
+        """Refresh what the inverter measures: power, energy, battery, status.
 
-        A timeout with nothing read yet raises: the inverter is not answering,
-        and the rest would only wait for their own timeouts.
+        The first call sets the inverter up, which probes every sub-system, so
+        that one report covers the settings too.
         """
         if self._polled is None:
             return await self.async_setup()
-        updated, failed = await self._async_read(self._polled, fatal_timeout=True)
-        return UpdateReport(updated, failed)
+        return await self._async_read(
+            self._served(_MEASURED), UpdateReport(set(), {}), fatal_timeout=True
+        )
+
+    async def async_update_settings(self) -> UpdateReport:
+        """Refresh what is configured: working mode, export limit, DOD protection.
+
+        These change when something writes them, not on their own, so a caller
+        that polls them at all polls them rarely — and reads them straight after
+        writing one. The first call sets the inverter up.
+        """
+        if self._polled is None:
+            return await self.async_setup()
+        return await self._async_read(
+            self._served(_CONFIGURED), UpdateReport(set(), {}), fatal_timeout=True
+        )
+
+    async def async_update(self) -> UpdateReport:
+        """Refresh measurements and settings together, in one report.
+
+        For a caller that does not want to schedule the two apart. A timeout
+        with nothing read yet raises: the inverter is not answering, and the
+        rest would only wait for their own timeouts.
+        """
+        if self._polled is None:
+            return await self.async_setup()  # the probe reads everything already
+        report = await self._async_read(
+            self._served(_MEASURED), UpdateReport(set(), {}), fatal_timeout=True
+        )
+        return await self._async_read(
+            self._served(_CONFIGURED), report, fatal_timeout=True
+        )
 
     async def async_read_raw(self) -> dict[str, dict[int, int | bool]]:
         """Every register this inverter reads, undecoded — for diagnostics.
@@ -136,20 +183,28 @@ class SunwayInverter:
                 raw.setdefault(space, {}).update(values)
         return {space: dict(sorted(values.items())) for space, values in raw.items()}
 
+    def _served(self, names: Sequence[str]) -> list[str]:
+        """The named sub-systems this inverter answered for at setup."""
+        assert self._polled is not None  # async_setup() builds it
+        return [name for name in names if name in self._polled]
+
     async def _async_read(
-        self, names: Sequence[str], *, fatal_timeout: bool = False
-    ) -> tuple[set[str], dict[str, ModbusError]]:
-        """Read the named sub-systems one at a time, containing failures.
+        self,
+        names: Sequence[str],
+        report: UpdateReport,
+        *,
+        fatal_timeout: bool = False,
+    ) -> UpdateReport:
+        """Read the named sub-systems one at a time, adding to ``report``.
 
-        Listeners fire only once every sub-system has been tried, and only for
-        the ones that refreshed — a failed component's store is untouched, so
-        its fields keep their previous values.
+        Listeners fire only once every sub-system in this read has been tried,
+        and only for the ones that refreshed — a failed component's store is
+        untouched, so its fields keep their previous values.
 
-        ``fatal_timeout`` raises a timeout that nothing has answered before.
-        The setup probe leaves it off: there a timeout must keep its sub-system.
+        ``fatal_timeout`` raises a timeout that nothing in ``report`` has
+        answered before. The setup probe leaves it off: there a timeout must
+        keep its sub-system.
         """
-        updated: set[str] = set()
-        failed: dict[str, ModbusError] = {}
         for name in names:
             component: SunwayComponent = getattr(self, name)
             try:
@@ -157,14 +212,15 @@ class SunwayInverter:
             except ModbusConnectionError:
                 raise
             except ModbusTimeoutError as err:
-                if fatal_timeout and not updated and not failed:
+                if fatal_timeout and not report.updated and not report.failed:
                     raise  # nothing answered at all; assume the rest time out too
-                failed[name] = err
+                report.failed[name] = err
             except ModbusError as err:
-                failed[name] = err
+                report.failed[name] = err
             else:
-                updated.add(name)
-        for name in updated:
-            fresh: SunwayComponent = getattr(self, name)
-            fresh.notify()
-        return updated, failed
+                report.updated.add(name)
+        for name in names:
+            if name in report.updated:
+                fresh: SunwayComponent = getattr(self, name)
+                fresh.notify()
+        return report
