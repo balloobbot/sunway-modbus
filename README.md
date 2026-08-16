@@ -81,7 +81,7 @@ the quickest way to see whether one is wired and addressed correctly:
 
 ```bash
 uv run script/query.py /dev/ttyUSB0 --transport serial --unit 1
-uv run script/query.py 192.168.1.50 --transport tcp --unit 1 --framer rtu
+uv run script/query.py 192.168.1.50 --unit 1 --framer rtu
 ```
 
 It names the sub-systems this inverter refused rather than printing their empty

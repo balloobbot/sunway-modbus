@@ -29,7 +29,7 @@ from sunway_modbus import SunwayInverter
 
 # The inverter is RS-485 RTU; over TCP it is reached through a gateway, which
 # presents it either transparently (rtu) or as native Modbus TCP (socket).
-CONNECTIONS = (("serial", "rtu"), ("tcp", "rtu"), ("tcp", "socket"))
+CONNECTIONS = (("tcp", "rtu"), ("tcp", "socket"), ("serial", "rtu"))
 
 
 def sub_systems(inverter: SunwayInverter) -> list[tuple[str, Component]]:
